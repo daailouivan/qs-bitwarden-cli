@@ -148,6 +148,22 @@ function decryptAutoUserKey(encValueB64, sessionKeyB64) {
   }
 }
 
+function resolveSessionFromKeyring(slot) {
+  try {
+    const bootId = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+    const acct = slot && slot !== "default" ? "session@" + slot : "session"
+    const { execSync } = require("child_process")
+    const out = execSync(`secret-tool lookup service qs-bitwarden-cli account "${acct}" 2>/dev/null`, {
+      encoding: "utf8",
+      timeout: 2000
+    }).trim()
+    if (out.startsWith(bootId + " ")) {
+      return out.slice(bootId.length + 1).trim()
+    }
+  } catch (e) {}
+  return ""
+}
+
 // -----------------------------------------------------------------------------
 // Server Mode: Listens on s.bw UNIX domain socket
 // -----------------------------------------------------------------------------
@@ -159,6 +175,7 @@ function runServer(options = {}) {
   let state = {
     status: "locked", // "unlocked" | "locked" | "unauthenticated"
     userId: "",
+    slot: "default",
     userKeyB64: "",
     session: "",
     appDataDir: ""
@@ -178,9 +195,49 @@ function runServer(options = {}) {
 
   const activeClients = new Set()
 
+  function resolveUserKey(userId) {
+    if (state.userKeyB64) return state.userKeyB64
+
+    const dataDir = state.appDataDir || path.join(process.env.HOME || "", ".config", "Bitwarden CLI")
+    const dataJsonPath = path.join(dataDir, "data.json")
+    if (!fs.existsSync(dataJsonPath)) return ""
+
+    try {
+      const raw = fs.readFileSync(dataJsonPath, "utf8")
+      const data = JSON.parse(raw)
+      const targetUserId = userId || state.userId || data.global_account_activeAccountId || ""
+      if (!targetUserId) return ""
+
+      const storageKey = "__PROTECTED__" + targetUserId + "_user_auto"
+      const encVal = data[storageKey]
+      if (!encVal) return ""
+
+      let sessionToken = state.session || process.env.BW_SESSION || ""
+      if (!sessionToken) {
+        sessionToken = resolveSessionFromKeyring(state.slot)
+      }
+      if (!sessionToken && state.slot && state.slot !== "default") {
+        sessionToken = resolveSessionFromKeyring("default")
+      }
+
+      if (sessionToken) {
+        const key = decryptAutoUserKey(encVal, sessionToken)
+        if (key) {
+          state.userKeyB64 = key
+          state.status = "unlocked"
+          state.userId = targetUserId
+          return key
+        }
+      }
+    } catch (e) {}
+
+    return ""
+  }
+
   const server = net.createServer(client => {
     activeClients.add(client)
 
+    let clientAppId = ""
     let clientType = ""
     let extensionId = ""
     let sessionSecret = null // Buffer(64)
@@ -189,7 +246,9 @@ function runServer(options = {}) {
 
     function sendUnencrypted(obj) {
       try {
-        const payload = Buffer.from(JSON.stringify(obj), "utf8")
+        const reply = Object.assign({}, obj)
+        if (clientAppId && !reply.appId) reply.appId = clientAppId
+        const payload = Buffer.from(JSON.stringify(reply), "utf8")
         client.write(encodeFrame(payload))
       } catch (e) {}
     }
@@ -197,57 +256,79 @@ function runServer(options = {}) {
     function sendEncrypted(obj) {
       if (!encKey || !macKey) return
       try {
-        const encStr = encryptEncString(JSON.stringify(obj), encKey, macKey)
-        const payload = Buffer.from(JSON.stringify({ message: encStr }), "utf8")
-        client.write(encodeFrame(payload))
+        const toEncrypt = Object.assign({ timestamp: Date.now() }, obj)
+        const encStr = encryptEncString(JSON.stringify(toEncrypt), encKey, macKey)
+        const outer = {
+          messageId: obj.messageId,
+          message: encStr
+        }
+        if (clientAppId) outer.appId = clientAppId
+        client.write(encodeFrame(Buffer.from(JSON.stringify(outer), "utf8")))
       } catch (e) {}
     }
 
     const parser = createFrameParser(payload => {
-      let msg
+      let rawMsg
       try {
-        msg = JSON.parse(payload.toString("utf8"))
+        rawMsg = JSON.parse(payload.toString("utf8"))
       } catch (e) {
         return
       }
 
-      // Initial announcement from desktop_proxy
-      if (msg.clientType && !clientType) {
-        clientType = String(msg.clientType || "")
-        extensionId = String(msg.extensionId || "")
+      if (rawMsg.appId) {
+        clientAppId = String(rawMsg.appId)
+      }
+
+      // Initial announcement from our proxy
+      if (rawMsg.clientType && !rawMsg.command && !rawMsg.message) {
+        clientType = String(rawMsg.clientType || "")
+        extensionId = String(rawMsg.extensionId || "")
         process.stdout.write(JSON.stringify({
           type: "clientConnected",
           clientType: clientType,
           extensionId: extensionId
         }) + "\n")
-        sendUnencrypted({ command: "connected" })
         return
       }
 
+      const inner = (rawMsg.message && typeof rawMsg.message === "object") ? rawMsg.message : rawMsg
+
       // Handshake: setupEncryption
-      if (msg.command === "setupEncryption") {
-        if (!msg.publicKey) return
+      if (inner.command === "setupEncryption") {
+        const pubKey = inner.publicKey
+        if (!pubKey) return
+        const msgId = inner.messageId !== undefined ? inner.messageId : -1
         try {
           sessionSecret = crypto.randomBytes(64)
           encKey = sessionSecret.subarray(0, 32)
           macKey = sessionSecret.subarray(32, 64)
-          const sharedSecret = encryptSharedSecret(msg.publicKey, sessionSecret)
-          sendUnencrypted({
+          const sharedSecret = encryptSharedSecret(pubKey, sessionSecret)
+          const resp = {
             command: "setupEncryption",
+            messageId: msgId,
             sharedSecret: sharedSecret
-          })
+          }
+          if (clientAppId) resp.appId = clientAppId
+          sendUnencrypted(resp)
         } catch (err) {
-          sendUnencrypted({
+          const resp = {
             command: "setupEncryption",
+            messageId: msgId,
             error: err.message
-          })
+          }
+          if (clientAppId) resp.appId = clientAppId
+          sendUnencrypted(resp)
         }
         return
       }
 
       // Encrypted message payload
-      if (msg.message && encKey && macKey) {
-        const decryptedJson = decryptEncString(msg.message, encKey, macKey)
+      const encMessage = typeof rawMsg.message === "string"
+        ? rawMsg.message
+        : (rawMsg.message && typeof rawMsg.message.encryptedString === "string" ? rawMsg.message.encryptedString : null)
+
+      if (encMessage && encKey && macKey) {
+        const decryptedJson = decryptEncString(encMessage, encKey, macKey)
         if (!decryptedJson) return
         let cmd
         try {
@@ -267,18 +348,20 @@ function runServer(options = {}) {
       switch (command) {
         case "getBiometricsStatus":
         case "getBiometricsStatusForUser": {
+          const userKey = resolveUserKey(cmd.userId)
           let code
-          if (state.status === "unauthenticated") {
-            code = BiometricsStatus.NotEnabledLocally
-          } else if (state.status === "unlocked") {
+          if (userKey || state.status === "unlocked") {
             code = BiometricsStatus.Available
+          } else if (state.status === "unauthenticated") {
+            code = BiometricsStatus.NotEnabledLocally
           } else {
             code = BiometricsStatus.UnlockNeeded
           }
           respond({
             command: command,
             messageId: messageId,
-            response: code
+            response: code,
+            timestamp: Date.now()
           })
           break
         }
@@ -287,28 +370,32 @@ function runServer(options = {}) {
           respond({
             command: "canEnableBiometricUnlock",
             messageId: messageId,
-            response: true
+            response: true,
+            timestamp: Date.now()
           })
           break
         }
 
         case "authenticateWithBiometrics": {
-          const ok = state.status === "unlocked"
+          const userKey = resolveUserKey(cmd.userId)
+          const ok = Boolean(userKey || state.status === "unlocked")
           respond({
             command: "authenticateWithBiometrics",
             messageId: messageId,
-            response: ok
+            response: ok,
+            timestamp: Date.now()
           })
           break
         }
 
         case "unlockWithBiometricsForUser": {
-          if (state.status === "unlocked" && state.userKeyB64) {
+          const userKey = resolveUserKey(cmd.userId)
+          if (userKey) {
             respond({
               command: "unlockWithBiometricsForUser",
               response: true,
               messageId: messageId,
-              userKeyB64: state.userKeyB64,
+              userKeyB64: userKey,
               timestamp: Date.now()
             })
           } else {
@@ -320,7 +407,8 @@ function runServer(options = {}) {
             respond({
               command: "unlockWithBiometricsForUser",
               response: false,
-              messageId: messageId
+              messageId: messageId,
+              timestamp: Date.now()
             })
           }
           break
@@ -330,7 +418,8 @@ function runServer(options = {}) {
           respond({
             command: command,
             messageId: messageId,
-            response: false
+            response: false,
+            timestamp: Date.now()
           })
           break
         }
@@ -387,6 +476,7 @@ function runServer(options = {}) {
     if (msg.type === "status") {
       state.status = String(msg.status || "locked")
       state.userId = String(msg.userId || state.userId || "")
+      state.slot = String(msg.slot || state.slot || "default")
       state.appDataDir = String(msg.appDataDir || state.appDataDir || "")
 
       if (msg.userKeyB64) {
@@ -397,33 +487,12 @@ function runServer(options = {}) {
         state.session = String(msg.session)
       }
 
-      // If unlocked and userKeyB64 not directly supplied, try to decrypt from data.json
-      if (state.status === "unlocked" && !state.userKeyB64 && state.userId && state.session) {
-        tryResolveUserKey()
-      }
-
-      if (state.status !== "unlocked") {
+      if (state.status === "unlocked") {
+        resolveUserKey(state.userId)
+      } else {
         state.userKeyB64 = ""
       }
     }
-  }
-
-  function tryResolveUserKey() {
-    const dataDir = state.appDataDir || path.join(process.env.HOME || "", ".config", "Bitwarden CLI")
-    const dataJsonPath = path.join(dataDir, "data.json")
-    try {
-      if (!fs.existsSync(dataJsonPath)) return
-      const raw = fs.readFileSync(dataJsonPath, "utf8")
-      const data = JSON.parse(raw)
-      const storageKey = "__PROTECTED__" + state.userId + "_user_auto"
-      const encVal = data[storageKey]
-      if (encVal) {
-        const key = decryptAutoUserKey(encVal, state.session)
-        if (key) {
-          state.userKeyB64 = key
-        }
-      }
-    } catch (e) {}
   }
 
   function cleanup() {
@@ -485,6 +554,9 @@ function runProxy(args) {
   }
 
   const socket = net.createConnection(socketPath, () => {
+    // Send connected message to browser extension stdout
+    process.stdout.write(encodeFrame(Buffer.from(JSON.stringify({ command: "connected" }), "utf8")))
+
     // Send announcement frame to s.bw
     const announcement = Buffer.from(JSON.stringify({
       clientType: clientType,

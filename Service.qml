@@ -8521,6 +8521,7 @@ Item {
       type: "status",
       status: root.status,
       userId: root.accountId || "",
+      slot: root.activeSlot || "default",
       session: sess,
       appDataDir: Model.accountAppDataDir(root.activeSlot, Quickshell.env("XDG_DATA_HOME"), Quickshell.env("HOME"))
     }

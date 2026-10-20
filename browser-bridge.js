@@ -25,11 +25,13 @@ const BiometricsStatus = {
   Available: 0,
   UnlockNeeded: 1,
   HardwareUnavailable: 2,
-  NotSupported: 3,
-  NotEnabled: 4,
-  DesktopDisconnected: 5,
-  BiometricsReenrolled: 6,
-  NotEnabledLocally: 7
+  AutoSetupNeeded: 3,
+  ManualSetupNeeded: 4,
+  PlatformUnsupported: 5,
+  DesktopDisconnected: 6,
+  NotEnabledLocally: 7,
+  NotEnabledInConnectedDesktopApp: 8,
+  NativeMessagingPermissionMissing: 9
 }
 
 function resolveCacheDir(home, xdgCacheHome) {
@@ -123,6 +125,19 @@ function encryptEncString(plaintext, encKey, macKey) {
     .update(Buffer.concat([iv, ciphertext]))
     .digest()
   return "2." + iv.toString("base64") + "|" + ciphertext.toString("base64") + "|" + mac.toString("base64")
+}
+
+function formatEncStringObject(encStr) {
+  if (typeof encStr !== "string" || !encStr.startsWith("2.")) return null
+  const parts = encStr.slice(2).split("|")
+  if (parts.length !== 3) return null
+  return {
+    encryptedString: encStr,
+    encryptionType: 2,
+    data: parts[1],
+    iv: parts[0],
+    mac: parts[2]
+  }
 }
 
 // Decrypt auto-unlock key from Bitwarden CLI's data.json using BW_SESSION
@@ -480,9 +495,10 @@ function runServer(options = {}) {
       try {
         const toEncrypt = Object.assign({ timestamp: Date.now() }, obj)
         const encStr = encryptEncString(JSON.stringify(toEncrypt), encKey, macKey)
+        const encObj = formatEncStringObject(encStr)
         const outer = {
           messageId: obj.messageId,
-          message: encStr
+          message: encObj
         }
         if (clientAppId) outer.appId = clientAppId
         logDebug("SERVER_SEND_ENC", { inner: toEncrypt, outer })
@@ -589,7 +605,7 @@ function runServer(options = {}) {
           if (userKey || state.status === "unlocked") {
             code = BiometricsStatus.Available
           } else if (state.status === "unauthenticated") {
-            code = BiometricsStatus.NotEnabledLocally
+            code = BiometricsStatus.NotEnabledInConnectedDesktopApp
           } else {
             code = BiometricsStatus.UnlockNeeded
           }
@@ -1059,6 +1075,7 @@ module.exports = {
   encryptSharedSecret,
   decryptEncString,
   encryptEncString,
+  formatEncStringObject,
   decryptAutoUserKey,
   resolveSocketPath,
   resolveCacheDir,

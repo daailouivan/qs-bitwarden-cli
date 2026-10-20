@@ -185,7 +185,30 @@ check("browserManifestRemoveCommand produces bash command",
 
 eq("BiometricsStatus.Available", bridge.BiometricsStatus.Available, 0)
 eq("BiometricsStatus.UnlockNeeded", bridge.BiometricsStatus.UnlockNeeded, 1)
+eq("BiometricsStatus.HardwareUnavailable", bridge.BiometricsStatus.HardwareUnavailable, 2)
+eq("BiometricsStatus.AutoSetupNeeded", bridge.BiometricsStatus.AutoSetupNeeded, 3)
+eq("BiometricsStatus.ManualSetupNeeded", bridge.BiometricsStatus.ManualSetupNeeded, 4)
+eq("BiometricsStatus.PlatformUnsupported", bridge.BiometricsStatus.PlatformUnsupported, 5)
+eq("BiometricsStatus.DesktopDisconnected", bridge.BiometricsStatus.DesktopDisconnected, 6)
 eq("BiometricsStatus.NotEnabledLocally", bridge.BiometricsStatus.NotEnabledLocally, 7)
+eq("BiometricsStatus.NotEnabledInConnectedDesktopApp", bridge.BiometricsStatus.NotEnabledInConnectedDesktopApp, 8)
+eq("BiometricsStatus.NativeMessagingPermissionMissing", bridge.BiometricsStatus.NativeMessagingPermissionMissing, 9)
+
+// --- EncString object formatting for browser extension -----------------------
+
+{
+  const encKey = crypto.randomBytes(32)
+  const macKey = crypto.randomBytes(32)
+  const encStr = bridge.encryptEncString("test payload", encKey, macKey)
+  const encObj = bridge.formatEncStringObject(encStr)
+
+  eq("encObj.encryptedString matches encStr", encObj.encryptedString, encStr)
+  eq("encObj.encryptionType is 2 (AesCbc256_HmacSha256_B64)", encObj.encryptionType, 2)
+  check("encObj.iv exists and is base64", typeof encObj.iv === "string" && encObj.iv.length > 0)
+  check("encObj.data exists and is base64", typeof encObj.data === "string" && encObj.data.length > 0)
+  check("encObj.mac exists and is base64", typeof encObj.mac === "string" && encObj.mac.length > 0)
+  eq("invalid encStr returns null", bridge.formatEncStringObject("not-valid"), null)
+}
 
 // --- Bitwarden SDK IPC: CBOR & Noise Protocol --------------------------------
 

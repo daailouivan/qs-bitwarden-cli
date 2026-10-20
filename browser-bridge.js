@@ -419,6 +419,27 @@ function runServer(options = {}) {
   } catch (e) {}
 
   const activeClients = new Set()
+  const pendingUnlockCallbacks = []
+
+  function notifyUnlockSuccess(key) {
+    logDebug("NOTIFY_UNLOCK_SUCCESS", { keyLen: key ? key.length : 0, count: pendingUnlockCallbacks.length })
+    while (pendingUnlockCallbacks.length > 0) {
+      const cb = pendingUnlockCallbacks.shift()
+      try {
+        cb(key)
+      } catch (e) {}
+    }
+  }
+
+  function notifyUnlockFailure() {
+    logDebug("NOTIFY_UNLOCK_FAILURE", { count: pendingUnlockCallbacks.length })
+    while (pendingUnlockCallbacks.length > 0) {
+      const cb = pendingUnlockCallbacks.shift()
+      try {
+        cb(null)
+      } catch (e) {}
+    }
+  }
 
   function resolveUserKey(userId) {
     if (state.userKeyB64) return state.userKeyB64
@@ -600,14 +621,11 @@ function runServer(options = {}) {
       switch (command) {
         case "getBiometricsStatus":
         case "getBiometricsStatusForUser": {
-          const userKey = resolveUserKey(cmd.userId)
           let code
-          if (userKey || state.status === "unlocked") {
-            code = BiometricsStatus.Available
-          } else if (state.status === "unauthenticated") {
+          if (state.status === "unauthenticated") {
             code = BiometricsStatus.NotEnabledInConnectedDesktopApp
           } else {
-            code = BiometricsStatus.UnlockNeeded
+            code = BiometricsStatus.Available
           }
           respond({
             command: command,
@@ -651,17 +669,49 @@ function runServer(options = {}) {
               timestamp: Date.now()
             })
           } else {
-            // Vault is locked: notify parent Service.qml and deny for now
+            // Vault is locked: prompt parent QuickShell to unlock
             process.stdout.write(JSON.stringify({
               type: "unlockRequested",
               userId: cmd.userId || state.userId || ""
             }) + "\n")
-            respond({
-              command: "unlockWithBiometricsForUser",
-              response: false,
-              messageId: messageId,
-              timestamp: Date.now()
-            })
+
+            let answered = false
+            const timeoutTimer = setTimeout(() => {
+              if (answered) return
+              answered = true
+              const idx = pendingUnlockCallbacks.indexOf(onUnlock)
+              if (idx !== -1) pendingUnlockCallbacks.splice(idx, 1)
+              respond({
+                command: "unlockWithBiometricsForUser",
+                response: false,
+                messageId: messageId,
+                timestamp: Date.now()
+              })
+            }, 30000)
+
+            const onUnlock = (key) => {
+              if (answered) return
+              answered = true
+              clearTimeout(timeoutTimer)
+              if (key) {
+                respond({
+                  command: "unlockWithBiometricsForUser",
+                  response: true,
+                  messageId: messageId,
+                  userKeyB64: key,
+                  timestamp: Date.now()
+                })
+              } else {
+                respond({
+                  command: "unlockWithBiometricsForUser",
+                  response: false,
+                  messageId: messageId,
+                  timestamp: Date.now()
+                })
+              }
+            }
+
+            pendingUnlockCallbacks.push(onUnlock)
           }
           break
         }
@@ -796,58 +846,78 @@ function runServer(options = {}) {
 
         logDebug("SDK_RPC_REQ", { type: req.request_type, id: req.request_id })
 
-        let result
+        function sendRpcResponse(rpcResult) {
+          const respObj = {
+            result: rpcResult,
+            request_id: req.request_id,
+            request_type: req.request_type
+          }
+          const respJson = Buffer.from(JSON.stringify(respObj), "utf8")
+          client._sdkSession.sendNonce += 1
+          const sealedResp = noiseAesGcmSeal(
+            client._sdkSession.sendKey,
+            client._sdkSession.sendNonce,
+            Buffer.alloc(0),
+            respJson
+          )
+
+          const respCbor = encodeCbor({
+            TransportFrame: {
+              payload: sealedResp,
+              nonce: client._sdkSession.sendNonce
+            }
+          })
+
+          sendSdkEnvelope(respCbor, req.response_topic || "RpcResponseMessage")
+          logDebug("SDK_RPC_RESP_SENT", { type: req.request_type, id: req.request_id })
+        }
+
         if (req.request_type === "DiscoverRequest") {
-          result = { Ok: { version: "2026.9.0" } }
+          sendRpcResponse({ Ok: { version: "2026.9.0" } })
+          return
         } else if (req.request_type === "GetBiometricsStatus") {
-          const reqUserId = req.request && (req.request.user_id || req.request.userId)
-          const key = resolveUserKey(reqUserId || state.userId)
-          result = { Ok: key || state.status === "unlocked" ? "Available" : "UnlockNeeded" }
+          sendRpcResponse({ Ok: state.status === "unauthenticated" ? "NotEnabled" : "Available" })
+          return
         } else if (req.request_type === "UnlockBiometrics") {
           const reqUserId = req.request && (req.request.user_id || req.request.userId)
           const key = resolveUserKey(reqUserId || state.userId)
           if (key) {
-            result = { Ok: { user_key: key } }
             logDebug("SDK_UNLOCK_SUCCESS", { userId: reqUserId || state.userId })
+            sendRpcResponse({ Ok: { user_key: key } })
+            return
           } else {
             process.stdout.write(JSON.stringify({
               type: "unlockRequested",
               userId: reqUserId || state.userId || ""
             }) + "\n")
-            result = { Ok: { user_key: null } }
-            logDebug("SDK_UNLOCK_FAILED", { userId: reqUserId || state.userId })
+
+            let answered = false
+            const timeoutTimer = setTimeout(() => {
+              if (answered) return
+              answered = true
+              const idx = pendingUnlockCallbacks.indexOf(onUnlock)
+              if (idx !== -1) pendingUnlockCallbacks.splice(idx, 1)
+              sendRpcResponse({ Ok: { user_key: null } })
+            }, 30000)
+
+            const onUnlock = (unlockedKey) => {
+              if (answered) return
+              answered = true
+              clearTimeout(timeoutTimer)
+              sendRpcResponse({ Ok: { user_key: unlockedKey } })
+            }
+
+            pendingUnlockCallbacks.push(onUnlock)
+            return
           }
         } else if (req.request_type === "AuthenticateBiometrics") {
-          result = { Ok: true }
+          sendRpcResponse({ Ok: true })
+          return
         } else {
           logDebug("SDK_UNKNOWN_RPC", req.request_type)
-          result = { Err: "NoHandlerFound" }
+          sendRpcResponse({ Err: "NoHandlerFound" })
+          return
         }
-
-        const respObj = {
-          result,
-          request_id: req.request_id,
-          request_type: req.request_type
-        }
-        const respJson = Buffer.from(JSON.stringify(respObj), "utf8")
-        client._sdkSession.sendNonce += 1
-        const sealedResp = noiseAesGcmSeal(
-          client._sdkSession.sendKey,
-          client._sdkSession.sendNonce,
-          Buffer.alloc(0),
-          respJson
-        )
-
-        const respCbor = encodeCbor({
-          TransportFrame: {
-            payload: sealedResp,
-            nonce: client._sdkSession.sendNonce
-          }
-        })
-
-        sendSdkEnvelope(respCbor, req.response_topic || "RpcResponseMessage")
-        logDebug("SDK_RPC_RESP_SENT", { type: req.request_type, id: req.request_id })
-        return
       }
 
       if (frame === "CryptoInvalidated" || (frame && frame.CryptoInvalidated)) {
@@ -924,9 +994,13 @@ function runServer(options = {}) {
       }
 
       if (state.status === "unlocked") {
-        resolveUserKey(state.userId)
+        const key = resolveUserKey(state.userId)
+        if (key) {
+          notifyUnlockSuccess(key)
+        }
       } else {
         state.userKeyB64 = ""
+        notifyUnlockFailure()
       }
     }
   }

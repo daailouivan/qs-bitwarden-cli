@@ -280,5 +280,72 @@ eq("BiometricsStatus.NativeMessagingPermissionMissing", bridge.BiometricsStatus.
   eq("transport seal and open", decTransport.toString("utf8"), testPlaintext.toString("utf8"))
 }
 
+// --- Control message handling (avoid premature unlock rejection) ------------
+
+{
+  let successCalled = 0
+  let failureCalled = 0
+  let resolvedKey = "TEST_USER_KEY"
+
+  const state = {
+    status: "locked",
+    userId: "test-user-id",
+    slot: "default",
+    userKeyB64: "",
+    session: "",
+    appDataDir: ""
+  }
+
+  const notifySuccess = (key) => { successCalled++; eq("resolved key passed", key, resolvedKey) }
+  const notifyFailure = () => { failureCalled++ }
+  const resolveUserKey = (userId) => resolvedKey
+
+  // 1. A status update with "locked" must NOT fail pending unlock requests
+  bridge.processControlMessage({ type: "status", status: "locked" }, state, notifySuccess, notifyFailure, resolveUserKey)
+  eq("status: locked does not trigger notifyFailure", failureCalled, 0)
+  eq("status: locked does not trigger notifySuccess", successCalled, 0)
+
+  // 2. An explicit unlockCancelled message triggers failure immediately
+  bridge.processControlMessage({ type: "unlockCancelled" }, state, notifySuccess, notifyFailure, resolveUserKey)
+  eq("unlockCancelled triggers notifyFailure", failureCalled, 1)
+
+  // 3. A status update with "unauthenticated" (logout) triggers failure
+  bridge.processControlMessage({ type: "status", status: "unauthenticated" }, state, notifySuccess, notifyFailure, resolveUserKey)
+  eq("status: unauthenticated triggers notifyFailure", failureCalled, 2)
+
+  // 4. A status update with "unlocked" resolves key and triggers success
+  bridge.processControlMessage({ type: "status", status: "unlocked" }, state, notifySuccess, notifyFailure, resolveUserKey)
+  eq("status: unlocked triggers notifySuccess", successCalled, 1)
+
+  // 5. Service.qml sends unlockCancelled when closed without unlocking
+  const serviceSrc = read("Service.qml")
+  check("Service.qml defines sendBrowserBridgeCancel",
+    /function sendBrowserBridgeCancel\(\)/.test(serviceSrc),
+    "expected sendBrowserBridgeCancel in Service.qml")
+  check("Service.qml calls sendBrowserBridgeCancel on close",
+    /sendBrowserBridgeCancel\(\)/.test(serviceSrc),
+    "expected sendBrowserBridgeCancel calls in Service.qml")
+}
+
+// --- Sensitive data redaction ------------------------------------------------
+
+{
+  const testObj = {
+    command: "unlockWithBiometricsForUser",
+    userKeyB64: "SUPER_SECRET_KEY",
+    nested: {
+      sessionToken: "SECRET_SESSION",
+      passwordVal: "SECRET_PASSWORD",
+      safeValue: "ok"
+    }
+  }
+
+  const redacted = bridge.redactSensitive(testObj)
+  eq("userKeyB64 is redacted", redacted.userKeyB64, "[REDACTED]")
+  eq("sessionToken is redacted", redacted.nested.sessionToken, "[REDACTED]")
+  eq("passwordVal is redacted", redacted.nested.passwordVal, "[REDACTED]")
+  eq("safeValue is preserved", redacted.nested.safeValue, "ok")
+}
+
 done()
 

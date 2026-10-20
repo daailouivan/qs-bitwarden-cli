@@ -5,7 +5,7 @@
   "version": "1.11.7",
   "author": "David Spencer",
   "license": "MIT",
-  "description": "Bitwarden password manager integration for the Omarchy status bar and quick access panel.",
+  "description": "Bitwarden password manager integration for the Omarchy status bar and quick access panel, featuring browser extension biometric unlock, credential search, TOTP, and SSH agent.",
   "kinds": [
     "bar-widget",
     "service"

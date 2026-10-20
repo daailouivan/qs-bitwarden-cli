@@ -1,7 +1,8 @@
 # qs-bitwarden-cli
 
 Your Bitwarden vault in the **Omarchy** status bar. Search, copy, and manage
-every item type without opening a browser.
+every item type, and unlock your browser extensions with biometrics without the heavy
+Electron desktop app.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.11.2-green.svg)](manifest.json)
@@ -227,6 +228,7 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
 | **Unlock with PIN** [^pin] | ✅ | ❌ | ✅ |
 | **Unlock with fingerprint** [^fp] [^bio] [^bio-linux] | ✅ | ❌ | ✅ |
 | **Unlock with FIDO2 key** [^fido] | ✅ | ❌ | ❌ |
+| **Browser extension biometric unlock** [^browser-bio] | ✅ | ❌ | ✅ |
 | Auto-lock on idle, screen lock, suspend [^cli-lock] [^desk-lock] | ✅ | ❌ | ✅ |
 | **Suggests by focused window / browser tab** | ✅ | ❌ | ❌ |
 | Self-hosted and Vaultwarden | ✅ | ✅ | ✅ |
@@ -258,6 +260,7 @@ would otherwise reach for. Checked against Bitwarden's documentation on 2026-12-
     and mobile apps -- not the CLI.
 [^bio-linux]: On Linux the desktop app's biometric unlock goes through a polkit
     agent rather than a fingerprint reader directly.
+[^browser-bio]: Emulates Bitwarden desktop's native messaging IPC protocol so official browser extensions (Firefox, Chrome, Brave, Edge, Vivaldi, etc.) can unlock via fingerprint, FIDO2, PIN, or master password without running the official Electron desktop app.
 [^fido]: **This plugin** asks the key for its `hmac-secret` on the
     registration `omarchy setup security fido2` writes, and that secret opens
     the stored password -- so unlocking needs the key, not only a touch. No
@@ -476,6 +479,17 @@ Its way in is removed when you turn the setting off or log out -- for the accoun
 Off by default. See **[docs/ssh-agent.md](docs/ssh-agent.md)** for setup, the
 provenance check, and what the agent does and does not protect.
 
+### Browser extension biometric unlock
+
+`qs-bitwarden-cli` includes a native messaging host and IPC server bridge that integrates with official Bitwarden browser extensions (Chrome, Brave, Firefox, Edge, Vivaldi, and Flatpak browser installations).
+
+- **How it works**: When you click "Unlock with biometrics" in your browser extension, the extension connects via native messaging (`bin/desktop_proxy`) to the bridge listening on `~/.cache/com.bitwarden.desktop/s.bw`.
+- **Automatic popup**: The bridge requests QuickShell to open the status bar panel so you can authenticate using your configured method (fingerprint, FIDO2 key, PIN, or master password).
+- **Instant handoff**: Authenticating in the panel immediately delivers the user decryption key to the extension over the authenticated channel and closes the panel.
+- **Both protocols supported**: Fully implements both Bitwarden's modern Noise protocol (`Noise_NN_P256_AESGCM_SHA256` CBOR transport) and legacy RSA-OAEP / EncString v2 cryptography.
+- **Automatic provisioning**: Manifests for all detected browser directories are created automatically when browser integration is enabled (`browserIntegrationEnabled: true`).
+- **Zero Electron overhead**: Get seamless browser biometrics without having the heavy official Electron desktop client running in the background.
+
 ---
 
 ## Bar placement
@@ -556,6 +570,7 @@ The following settings are read from the plugin's own entry in the
 | `sshAgentUnlockOnDemand` | `boolean` | `false` | Let an identity listing raise the unlock prompt when the vault is locked and no keys have been loaded yet, instead of answering with an empty list. Signing a key the helper already knows always raises the prompt, with or without this. Off by default: `ssh` asks the agent for identities on every connection, so this raises the configured approval surface on the first `ssh` after every login. |
 | `sshAgentApprovalPopup` | `boolean` | `true` | Show SSH unlock and signing requests in a transient card in the middle of the screen instead of opening the anchored panel. Disable to show prompts in the panel. Multiple concurrent requests are queued sequentially with a "1 of N" counter and "Deny all" option. Escape and outside click deny. |
 | `sshAgentApprovalWindowSec` | `number` | `120` | How long one approval keeps covering further signatures from the same program with the same key. Range `0`-`900`; `0` asks every time. Held in memory only and dropped on lock, logout or exit. |
+| `browserIntegrationEnabled` | `boolean` | `true` | Enable browser extension integration for biometric unlocking. Automatically provisions native messaging manifests for Firefox, Chrome, Brave, Edge, Vivaldi, and Flatpak browsers. Starts a lightweight native messaging bridge on `~/.cache/com.bitwarden.desktop/s.bw`. |
 
 One further key, `twoFactorMethods`, is written to the same entry but is not a
 setting you configure. It records which two-step method last logged each

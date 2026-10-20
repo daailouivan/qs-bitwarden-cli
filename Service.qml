@@ -3199,6 +3199,9 @@ Item {
 
   function close() {
     errorMessage = ""
+    if (browserPromptOpenedPanel && root.status !== "unlocked") {
+      sendBrowserBridgeCancel()
+    }
     browserPromptOpenedPanel = false
     revealedFields = ({})
     showDeleteConfirm = false
@@ -3348,7 +3351,6 @@ Item {
     if (opened) {
       if (!resumeFromPinentry()) onPanelOpened()
     } else if (!pinentryActive) {
-      browserPromptOpenedPanel = false
       pinentryAutoAsked = false
       clearRepromptGrant()
       resetPinentryChoice()
@@ -8558,6 +8560,11 @@ Item {
       appDataDir: Model.accountAppDataDir(root.activeSlot, Quickshell.env("XDG_DATA_HOME"), Quickshell.env("HOME"))
     }
     browserBridgeProc.write(JSON.stringify(msg) + "\n")
+  }
+
+  function sendBrowserBridgeCancel() {
+    if (!browserBridgeProc.running || !browserBridgeProc.stdinEnabled) return
+    browserBridgeProc.write(JSON.stringify({ type: "unlockCancelled" }) + "\n")
   }
 
   function syncBrowserIntegration() {

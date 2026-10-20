@@ -11,12 +11,28 @@ const crypto = require("crypto")
 
 const DEFAULT_SOCKET_SUBPATH = path.join("com.bitwarden.desktop", "s.bw")
 const MAX_FRAME_LEN = 1024 * 1024 // 1 MB max frame limit
-const LOG_FILE = "/tmp/bw-debug.log"
+const DEBUG = Boolean(process.env.QS_BITWARDEN_DEBUG)
+
+function redactSensitive(obj) {
+  if (!obj || typeof obj !== "object") return obj
+  const out = Array.isArray(obj) ? [] : {}
+  for (const k of Object.keys(obj)) {
+    if (/userKey|session|secret|password|privateKey/i.test(k)) {
+      out[k] = "[REDACTED]"
+    } else if (typeof obj[k] === "object") {
+      out[k] = redactSensitive(obj[k])
+    } else {
+      out[k] = obj[k]
+    }
+  }
+  return out
+}
 
 function logDebug(tag, msg) {
+  if (!DEBUG) return
   try {
-    const text = typeof msg === "object" ? JSON.stringify(msg) : String(msg)
-    fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}][PID ${process.pid}][${tag}] ${text}\n`)
+    const text = typeof msg === "object" ? JSON.stringify(redactSensitive(msg)) : String(msg)
+    process.stderr.write(`[${new Date().toISOString()}][PID ${process.pid}][${tag}] ${text}\n`)
   } catch (e) {}
 }
 
@@ -387,6 +403,62 @@ function encodeCbor(val) {
     return Buffer.concat(bufs)
   }
   throw new Error("Unsupported type for CBOR encoding: " + typeof val)
+}
+
+function processControlMessage(msg, state, notifyUnlockSuccess, notifyUnlockFailure, resolveUserKey, cleanup) {
+  if (!msg || typeof msg !== "object") return
+
+  if (msg.type === "shutdown") {
+    if (cleanup) cleanup()
+    process.exit(0)
+  }
+
+  if (msg.type === "unlockCancelled" || msg.type === "unlockFailed") {
+    if (notifyUnlockFailure) notifyUnlockFailure()
+    return
+  }
+
+  if (msg.type === "status") {
+    state.status = String(msg.status || "locked")
+    state.userId = String(msg.userId || state.userId || "")
+    state.slot = String(msg.slot || state.slot || "default")
+    state.appDataDir = String(msg.appDataDir || state.appDataDir || "")
+
+    if (msg.userKeyB64) {
+      state.userKeyB64 = String(msg.userKeyB64)
+    }
+
+    if (msg.session) {
+      state.session = String(msg.session)
+    }
+
+    if (state.status === "unlocked") {
+      const key = resolveUserKey ? resolveUserKey(state.userId) : ""
+      if (key) {
+        if (notifyUnlockSuccess) notifyUnlockSuccess(key)
+      } else {
+        // Retry resolution if data.json or keyring session write is slightly lagging status change
+        let retries = 10
+        const pollKey = () => {
+          const k = resolveUserKey ? resolveUserKey(state.userId) : ""
+          if (k) {
+            if (notifyUnlockSuccess) notifyUnlockSuccess(k)
+          } else if (--retries > 0) {
+            setTimeout(pollKey, 50)
+          }
+        }
+        setTimeout(pollKey, 20)
+      }
+    } else if (state.status === "unauthenticated") {
+      state.userKeyB64 = ""
+      if (notifyUnlockFailure) notifyUnlockFailure()
+    } else {
+      // Status is "locked" or "checking" - vault is locked/unlocking.
+      // Clear cached key so stale secrets are never returned, but DO NOT
+      // fail pending unlock requests that are actively awaiting the user's input!
+      state.userKeyB64 = ""
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -974,35 +1046,7 @@ function runServer(options = {}) {
   })
 
   function handleControlMessage(msg) {
-    if (msg.type === "shutdown") {
-      cleanup()
-      process.exit(0)
-    }
-
-    if (msg.type === "status") {
-      state.status = String(msg.status || "locked")
-      state.userId = String(msg.userId || state.userId || "")
-      state.slot = String(msg.slot || state.slot || "default")
-      state.appDataDir = String(msg.appDataDir || state.appDataDir || "")
-
-      if (msg.userKeyB64) {
-        state.userKeyB64 = String(msg.userKeyB64)
-      }
-
-      if (msg.session) {
-        state.session = String(msg.session)
-      }
-
-      if (state.status === "unlocked") {
-        const key = resolveUserKey(state.userId)
-        if (key) {
-          notifyUnlockSuccess(key)
-        }
-      } else {
-        state.userKeyB64 = ""
-        notifyUnlockFailure()
-      }
-    }
+    processControlMessage(msg, state, notifyUnlockSuccess, notifyUnlockFailure, resolveUserKey, cleanup)
   }
 
   function cleanup() {
@@ -1158,5 +1202,7 @@ module.exports = {
   noiseHkdf,
   noiseAesGcmSeal,
   noiseAesGcmOpen,
-  NOISE_PROTOCOL_NAME
+  NOISE_PROTOCOL_NAME,
+  processControlMessage,
+  redactSensitive
 }

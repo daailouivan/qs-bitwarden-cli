@@ -65,6 +65,14 @@ Every feature the plugin has, and why each one works the way it does. The
   - Every signature shows the key, its fingerprint and the program asking. The default prompt lives in the panel; the opt-in centered popup makes the plugin otherwise disappear until a decision is needed. One approval can cover a whole rebase; live approvals are listed and revocable, and repeated unanswered prompts fall back to a cooldown rather than pestering.
   - Public keys are projected to files for Git signing, one file per item, public material only. See [SSH Agent](ssh-agent.md).
 
+- **Browser Extension Biometric Unlock** (`browserIntegrationEnabled`, default `true`):
+  - Bridges official Bitwarden browser extensions (Firefox, Chrome, Brave, Edge, Vivaldi, and Flatpaks) directly to the QuickShell vault.
+  - Automatically provisions native messaging host manifests (`com.8bit.bitwarden.json`) pointing to a lightweight launcher proxy (`bin/desktop_proxy`).
+  - Supports modern Bitwarden Noise protocol handshakes (`Noise_NN_P256_AESGCM_SHA256` CBOR transport) as well as legacy RSA-OAEP and EncString v2 cryptography.
+  - When the browser calls for unlock, the status bar widget automatically pops open to prompt for your biometric method (fingerprint, FIDO2, PIN, or master password).
+  - Unlocking in the panel instantly delivers the user key to the browser extension and closes the panel.
+  - Communication occurs over a local UNIX domain socket (`~/.cache/com.bitwarden.desktop/s.bw`) restricted to `0700` permissions. No secrets or keys are ever written to disk or logs.
+
 - **Context-Aware Password Suggestions (Active Window / Browser Tab)**:
   - Reads the active window on open (`hyprctl activewindow -j`, falling back to the `hyprctl clients -j` focus history when the panel itself holds focus).
   - Recognises the current site from the browser's page title and matches it against each item's URLs and name using Bitwarden-style host and base-domain rules, brand aliases (a `Gmail` tab matches a `google.com` item), and word-boundary matching that ignores public suffixes and generic labels such as `www`, `login`, or `com`.

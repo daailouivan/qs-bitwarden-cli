@@ -187,4 +187,75 @@ eq("BiometricsStatus.Available", bridge.BiometricsStatus.Available, 0)
 eq("BiometricsStatus.UnlockNeeded", bridge.BiometricsStatus.UnlockNeeded, 1)
 eq("BiometricsStatus.NotEnabledLocally", bridge.BiometricsStatus.NotEnabledLocally, 7)
 
+// --- Bitwarden SDK IPC: CBOR & Noise Protocol --------------------------------
+
+{
+  // Test CBOR round-trip
+  const testObj = {
+    str: "hello world",
+    num: 12345,
+    neg: -42,
+    flag: true,
+    n: null,
+    arr: [1, 2, 3],
+    bytes: Buffer.from("deadbeef", "hex")
+  }
+  const encoded = bridge.encodeCbor(testObj)
+  const decoded = bridge.decodeCbor(encoded)
+  eq("CBOR round-trip string", decoded.str, testObj.str)
+  eq("CBOR round-trip num", decoded.num, testObj.num)
+  eq("CBOR round-trip neg", decoded.neg, testObj.neg)
+  eq("CBOR round-trip flag", decoded.flag, testObj.flag)
+  eq("CBOR round-trip null", decoded.n, null)
+  eq("CBOR round-trip arr length", decoded.arr.length, 3)
+  eq("CBOR round-trip bytes", decoded.bytes.toString("hex"), testObj.bytes.toString("hex"))
+
+  // Test against official SDK snow_vectors.json test vector
+  function seq(from, to) {
+    const arr = []
+    for (let i = from; i <= to; i++) arr.push(i)
+    return Buffer.from(arr)
+  }
+
+  const m1 = Buffer.from("04515c3d6eb9e396b904d3feca7f54fdcd0cc1e997bf375dca515ad0a6c3b4035f4536be3a50f318fbf9a5475902a221502bef0d57e08c53b2cc0a56f17d9f9354", "hex")
+  const expectedM2 = "041f140146bfb1b251f84f4ddbe0d4cdcfd77afd984a9520e35794021f8312bb9eec995a08b1fa7704df3dcc0b50a9665263fb7711f95f9f8a449c5096e47c892b913a30bb601e0c94ca717388ab2c0968"
+  const expectedI2R = "44a64623c53e295e7786048e0b7d5f6811cf2b3ee55060a2a46d28d16ad11cd8"
+
+  const resPriv = seq(33, 64)
+  const ecdh = crypto.createECDH("prime256v1")
+  ecdh.setPrivateKey(resPriv)
+  const resPub = ecdh.getPublicKey()
+
+  const paddedName = Buffer.concat([Buffer.from(bridge.NOISE_PROTOCOL_NAME, "utf8"), Buffer.alloc(32 - bridge.NOISE_PROTOCOL_NAME.length, 0)])
+  let ck = Buffer.from(paddedName)
+  let h = crypto.createHash("sha256").update(paddedName).digest()
+
+  h = crypto.createHash("sha256").update(Buffer.concat([h, m1.subarray(0, 65)])).digest()
+  h = crypto.createHash("sha256").update(Buffer.concat([h, m1.subarray(65)])).digest()
+  h = crypto.createHash("sha256").update(Buffer.concat([h, resPub])).digest()
+
+  const dh = ecdh.computeSecret(m1.subarray(0, 65))
+  const keys = bridge.noiseHkdf(ck, dh, 2)
+  ck = keys[0]
+  const tempKey = keys[1]
+
+  const sealed = bridge.noiseAesGcmSeal(tempKey, 0, h, Buffer.alloc(0))
+  h = crypto.createHash("sha256").update(Buffer.concat([h, sealed])).digest()
+
+  const split = bridge.noiseHkdf(ck, Buffer.alloc(0), 2)
+  const i2r = split[0]
+  const r2i = split[1]
+
+  const m2 = Buffer.concat([resPub, sealed])
+  eq("m2 matches official SDK test vector", m2.toString("hex"), expectedM2)
+  eq("i2r matches official SDK test vector", i2r.toString("hex"), expectedI2R)
+
+  // Transport encryption & decryption test
+  const testPlaintext = Buffer.from('{"hello":"bitwarden"}', "utf8")
+  const encTransport = bridge.noiseAesGcmSeal(r2i, 1, Buffer.alloc(0), testPlaintext)
+  const decTransport = bridge.noiseAesGcmOpen(r2i, 1, Buffer.alloc(0), encTransport)
+  eq("transport seal and open", decTransport.toString("utf8"), testPlaintext.toString("utf8"))
+}
+
 done()
+

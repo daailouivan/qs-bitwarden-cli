@@ -2995,6 +2995,10 @@ Item {
     promoteUnlockToApproval()
     maybeStartupLoad()
     sendBrowserBridgeStatus()
+    if (root.status === "unlocked" && root.browserPromptOpenedPanel) {
+      root.browserPromptOpenedPanel = false
+      if (root.opened) root.close()
+    }
   }
 
   onAccountIdChanged: {
@@ -3195,6 +3199,7 @@ Item {
 
   function close() {
     errorMessage = ""
+    browserPromptOpenedPanel = false
     revealedFields = ({})
     showDeleteConfirm = false
     totpFollowupActive = false
@@ -3343,6 +3348,7 @@ Item {
     if (opened) {
       if (!resumeFromPinentry()) onPanelOpened()
     } else if (!pinentryActive) {
+      browserPromptOpenedPanel = false
       pinentryAutoAsked = false
       clearRepromptGrant()
       resetPinentryChoice()
@@ -8502,13 +8508,22 @@ Item {
     sendBrowserBridgeStatus()
   }
 
+  property bool browserPromptOpenedPanel: false
+
   function onBrowserBridgeLine(line) {
     if (!line) return
     try {
       var msg = JSON.parse(line)
       if (msg && msg.type === "unlockRequested") {
-        if (root.status === "locked") {
-          root.showPopout()
+        if (root.status !== "unlocked") {
+          root.browserPromptOpenedPanel = !root.opened
+          if (!root.opened) {
+            root.open()
+          } else {
+            root.focusAppropriateField()
+            root.prepareUnlock()
+            root.armPresenceUnlock()
+          }
         }
       }
     } catch (e) {}

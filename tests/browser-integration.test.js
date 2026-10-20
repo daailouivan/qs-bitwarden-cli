@@ -21,15 +21,15 @@ const manifestSchema = manifest.barWidget.schema.find(s => s.key === "browserInt
 const modelSchema = Model.SETTINGS_SCHEMA.find(s => s.key === "browserIntegrationEnabled")
 
 check("browserIntegrationEnabled exists in manifest.json schema",
-  !!manifestSchema && manifestSchema.type === "boolean" && manifestSchema.defaultValue === false,
+  !!manifestSchema && manifestSchema.type === "boolean" && manifestSchema.defaultValue === true,
   JSON.stringify(manifestSchema))
 
-check("browserIntegrationEnabled default is false in manifest.json",
-  manifest.barWidget.defaults.browserIntegrationEnabled === false,
+check("browserIntegrationEnabled default is true in manifest.json",
+  manifest.barWidget.defaults.browserIntegrationEnabled === true,
   String(manifest.barWidget.defaults.browserIntegrationEnabled))
 
 check("browserIntegrationEnabled exists in Model.SETTINGS_SCHEMA",
-  !!modelSchema && modelSchema.type === "bool" && modelSchema.defaultValue === false,
+  !!modelSchema && modelSchema.type === "bool" && modelSchema.defaultValue === true,
   JSON.stringify(modelSchema))
 
 check("browser group exists in SETTINGS_GROUPS",

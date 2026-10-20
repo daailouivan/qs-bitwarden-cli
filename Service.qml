@@ -139,7 +139,7 @@ Item {
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
   readonly property bool sshAgentApprovalPopup: Model.boolSetting("sshAgentApprovalPopup", setting("sshAgentApprovalPopup", true))
   readonly property int sshAgentApprovalWindowSec: Model.intSetting("sshAgentApprovalWindowSec", setting("sshAgentApprovalWindowSec"))
-  readonly property bool browserIntegrationEnabled: Model.boolSetting("browserIntegrationEnabled", setting("browserIntegrationEnabled", false))
+  readonly property bool browserIntegrationEnabled: Model.boolSetting("browserIntegrationEnabled", setting("browserIntegrationEnabled", true))
 
   onBrowserIntegrationEnabledChanged: {
     if (root.started) syncBrowserIntegration()
@@ -8502,6 +8502,23 @@ Item {
       onRead: function(line) { root.onBrowserBridgeLine(line) }
     }
     onStarted: root.onBrowserBridgeStarted()
+    onExited: function(exitCode) {
+      if (root.browserIntegrationEnabled && root.started) {
+        browserBridgeRestartTimer.restart()
+      }
+    }
+  }
+
+  Timer {
+    id: browserBridgeRestartTimer
+    interval: 2000
+    repeat: false
+    onTriggered: {
+      if (root.browserIntegrationEnabled && !browserBridgeProc.running) {
+        browserBridgeProc.command = Model.browserBridgeCommand(root.sshAgentPluginDir)
+        browserBridgeProc.running = true
+      }
+    }
   }
 
   function onBrowserBridgeStarted() {
@@ -8559,6 +8576,7 @@ Item {
         sendBrowserBridgeStatus()
       }
     } else {
+      browserBridgeRestartTimer.stop()
       if (browserBridgeProc.running) {
         if (browserBridgeProc.stdinEnabled) {
           browserBridgeProc.write(JSON.stringify({ type: "shutdown" }) + "\n")

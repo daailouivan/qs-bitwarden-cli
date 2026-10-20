@@ -6511,7 +6511,7 @@ var SETTINGS_SCHEMA = [
     min: 0, max: SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, step: 30, zeroLabel: "Always ask", defaultValue: 120,
     description: "How long one approval covers further signatures from the same process. Grants live only in the helper's memory and never survive a restart." },
 
-  { key: "browserIntegrationEnabled", group: "browser", type: "bool", label: "Browser integration", defaultValue: false,
+  { key: "browserIntegrationEnabled", group: "browser", type: "bool", label: "Browser integration", defaultValue: true,
     description: "Allow browser extensions to connect to this vault for biometric unlocking." },
 
   { key: "closeOnCopy", group: "general", type: "bool", label: "Close panel on copy", defaultValue: true,

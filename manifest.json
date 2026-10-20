@@ -38,7 +38,7 @@
       "sshAgentUnlockOnDemand": false,
       "sshAgentApprovalPopup": true,
       "sshAgentApprovalWindowSec": 120,
-      "browserIntegrationEnabled": false
+      "browserIntegrationEnabled": true
     },
     "schema": [
       {
@@ -177,7 +177,7 @@
         "type": "boolean",
         "label": "Browser integration",
         "description": "Allow browser extensions to connect to this vault for biometric unlocking. Automatically provisions browser native messaging manifests for Firefox, Chrome, Brave, Edge, Vivaldi and flatpaks.",
-        "defaultValue": false
+        "defaultValue": true
       }
     ]
   },

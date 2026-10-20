@@ -139,6 +139,11 @@ Item {
   readonly property bool sshAgentUnlockOnDemand: Model.boolSetting("sshAgentUnlockOnDemand", setting("sshAgentUnlockOnDemand", false))
   readonly property bool sshAgentApprovalPopup: Model.boolSetting("sshAgentApprovalPopup", setting("sshAgentApprovalPopup", true))
   readonly property int sshAgentApprovalWindowSec: Model.intSetting("sshAgentApprovalWindowSec", setting("sshAgentApprovalWindowSec"))
+  readonly property bool browserIntegrationEnabled: Model.boolSetting("browserIntegrationEnabled", setting("browserIntegrationEnabled", false))
+
+  onBrowserIntegrationEnabledChanged: {
+    if (root.started) syncBrowserIntegration()
+  }
 
   // State
   // status: "checking" | "unauthenticated" | "locked" | "unlocked"
@@ -878,6 +883,7 @@ Item {
     root.inspectUnlockKey()
     root.inspectQuickUnlockPrereqs()
     root.inspectUwsmFragment()
+    if (root.browserIntegrationEnabled) root.syncBrowserIntegration()
   }
 
   readonly property var categories: [
@@ -2405,6 +2411,7 @@ Item {
   function releaseVaultHelper() {
     shuttingDown = true
     if (vaultHelperProc.running) vaultHelperProc.write(Model.vaultHelperLine("shutdown", {}))
+    if (browserBridgeProc.running && browserBridgeProc.stdinEnabled) browserBridgeProc.write(JSON.stringify({ type: "shutdown" }) + "\n")
   }
 
   function lockSessionOnUnload() {
@@ -2987,6 +2994,15 @@ Item {
   onStatusChanged: {
     promoteUnlockToApproval()
     maybeStartupLoad()
+    sendBrowserBridgeStatus()
+  }
+
+  onAccountIdChanged: {
+    sendBrowserBridgeStatus()
+  }
+
+  onSessionChanged: {
+    sendBrowserBridgeStatus()
   }
 
   // Unlocked but keys still loading: ask for approval now. The companion
@@ -5365,6 +5381,7 @@ Item {
       case "sshAgentUnlockOnDemand": return sshAgentUnlockOnDemand
       case "sshAgentApprovalPopup": return sshAgentApprovalPopup
       case "sshAgentApprovalWindowSec": return sshAgentApprovalWindowSec
+      case "browserIntegrationEnabled": return browserIntegrationEnabled
     }
     return entry.type === "bool" ? Model.boolSetting(entry.key, setting(entry.key, entry.defaultValue)) : Number(setting(entry.key, 0))
   }
@@ -8451,6 +8468,94 @@ Item {
     id: sshAgentRestartTimer
     repeat: false
     onTriggered: root.applySshAgentEvent({ kind: "restartTimer", nowMs: Date.now() })
+  }
+
+  // -------------------------------------------------------------------------
+  // Browser integration bridge
+  // -------------------------------------------------------------------------
+
+  Process {
+    id: browserManifestInstallProc
+    onExited: function(exitCode) {
+      if (root.browserIntegrationEnabled && !browserBridgeProc.running) {
+        browserBridgeProc.command = Model.browserBridgeCommand(root.sshAgentPluginDir)
+        browserBridgeProc.running = true
+      }
+    }
+  }
+
+  Process {
+    id: browserManifestRemoveProc
+  }
+
+  Process {
+    id: browserBridgeProc
+    command: Model.browserBridgeCommand(root.sshAgentPluginDir)
+    stdinEnabled: true
+    stdout: SplitParser {
+      onRead: function(line) { root.onBrowserBridgeLine(line) }
+    }
+    onStarted: root.onBrowserBridgeStarted()
+  }
+
+  function onBrowserBridgeStarted() {
+    sendBrowserBridgeStatus()
+  }
+
+  function onBrowserBridgeLine(line) {
+    if (!line) return
+    try {
+      var msg = JSON.parse(line)
+      if (msg && msg.type === "unlockRequested") {
+        if (root.status === "locked") {
+          root.showPopout()
+        }
+      }
+    } catch (e) {}
+  }
+
+  function sendBrowserBridgeStatus() {
+    if (!browserBridgeProc.running || !browserBridgeProc.stdinEnabled) return
+    var sess = (root.session && root.session !== "HELD-BY-QS-BITWARDEN-VAULT-HELPER-SESSION") ? root.session : ""
+    var msg = {
+      type: "status",
+      status: root.status,
+      userId: root.accountId || "",
+      session: sess,
+      appDataDir: Model.accountAppDataDir(root.activeSlot, Quickshell.env("XDG_DATA_HOME"), Quickshell.env("HOME"))
+    }
+    browserBridgeProc.write(JSON.stringify(msg) + "\n")
+  }
+
+  function syncBrowserIntegration() {
+    if (root.browserIntegrationEnabled) {
+      browserManifestInstallProc.command = Model.browserManifestInstallCommand(
+        root.sshAgentPluginDir,
+        Quickshell.env("HOME"),
+        Quickshell.env("XDG_CONFIG_HOME"),
+        Quickshell.env("XDG_CACHE_HOME")
+      )
+      browserManifestInstallProc.running = true
+      if (!browserBridgeProc.running) {
+        browserBridgeProc.command = Model.browserBridgeCommand(root.sshAgentPluginDir)
+        browserBridgeProc.running = true
+      } else {
+        sendBrowserBridgeStatus()
+      }
+    } else {
+      if (browserBridgeProc.running) {
+        if (browserBridgeProc.stdinEnabled) {
+          browserBridgeProc.write(JSON.stringify({ type: "shutdown" }) + "\n")
+        }
+        browserBridgeProc.running = false
+      }
+      browserManifestRemoveProc.command = Model.browserManifestRemoveCommand(
+        Quickshell.env("HOME"),
+        Quickshell.env("XDG_CONFIG_HOME"),
+        Quickshell.env("XDG_CACHE_HOME")
+      )
+      browserManifestRemoveProc.running = true
+    }
   }
 
   // Holds the sleep inhibitor, so it runs whenever the setting is on, not only

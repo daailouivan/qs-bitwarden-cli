@@ -6472,6 +6472,7 @@ function fingerprintSetupCommand() {
 var SETTINGS_GROUPS = [
   { id: "general", label: "General" },
   { id: "security", label: "Security" },
+  { id: "browser", label: "Browser Integration" },
   { id: "sshAgent", label: "SSH Agent" }
 ]
 
@@ -6509,6 +6510,9 @@ var SETTINGS_SCHEMA = [
   { key: "sshAgentApprovalWindowSec", group: "sshAgent", type: "int", label: "Approve for this long", unit: "seconds",
     min: 0, max: SSH_AGENT_APPROVAL_WINDOW_MAX_SEC, step: 30, zeroLabel: "Always ask", defaultValue: 120,
     description: "How long one approval covers further signatures from the same process. Grants live only in the helper's memory and never survive a restart." },
+
+  { key: "browserIntegrationEnabled", group: "browser", type: "bool", label: "Browser integration", defaultValue: false,
+    description: "Allow browser extensions to connect to this vault for biometric unlocking." },
 
   { key: "closeOnCopy", group: "general", type: "bool", label: "Close panel on copy", defaultValue: true,
     description: "Return focus to your app as soon as Enter copies a credential." },
@@ -7057,3 +7061,165 @@ function presenterIndex(views, focusedScreen) {
   }
   return 0
 }
+
+// -------------------------------------------------------------------------
+// Browser Integration
+// -------------------------------------------------------------------------
+
+var BROWSER_MANIFEST_NAME = "com.8bit.bitwarden.json"
+
+var BROWSER_CHROMIUM_ORIGINS = [
+  "chrome-extension://nngceckbapebfimnlniiiahkandclblb/",
+  "chrome-extension://jbkfoedolllekgbhcbcoahefnbanhhlh/",
+  "chrome-extension://ccnckbpmaceehanjmeomladnmlffdjgn/"
+]
+
+var BROWSER_FIREFOX_EXTENSIONS = [
+  "{446900e4-71c2-419f-a6a7-df9c091e268b}"
+]
+
+function browserManifestName() {
+  return BROWSER_MANIFEST_NAME
+}
+
+function browserChromiumOrigins() {
+  return BROWSER_CHROMIUM_ORIGINS.slice()
+}
+
+function browserFirefoxExtensions() {
+  return BROWSER_FIREFOX_EXTENSIONS.slice()
+}
+
+function browserManifestDirs(home, xdgConfigHome) {
+  var h = String(home || "").replace(/\/+$/, "")
+  if (!h) h = "${HOME}"
+  var cfg = String(xdgConfigHome || "").replace(/\/+$/, "")
+  if (!cfg) cfg = h + "/.config"
+
+  var chromiumDirs = [
+    cfg + "/google-chrome/NativeMessagingHosts",
+    cfg + "/google-chrome-beta/NativeMessagingHosts",
+    cfg + "/google-chrome-unstable/NativeMessagingHosts",
+    cfg + "/chromium/NativeMessagingHosts",
+    cfg + "/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+    cfg + "/BraveSoftware/Brave-Browser-Beta/NativeMessagingHosts",
+    cfg + "/microsoft-edge/NativeMessagingHosts",
+    cfg + "/microsoft-edge-beta/NativeMessagingHosts",
+    cfg + "/microsoft-edge-dev/NativeMessagingHosts",
+    cfg + "/vivaldi/NativeMessagingHosts",
+    cfg + "/opera/NativeMessagingHosts",
+    cfg + "/thorium/NativeMessagingHosts",
+    cfg + "/cachy-browser/NativeMessagingHosts",
+    // Flatpaks
+    h + "/.var/app/com.google.Chrome/config/google-chrome/NativeMessagingHosts",
+    h + "/.var/app/org.chromium.Chromium/config/chromium/NativeMessagingHosts",
+    h + "/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+    h + "/.var/app/com.microsoft.Edge/config/microsoft-edge/NativeMessagingHosts",
+    h + "/.var/app/com.vivaldi.Vivaldi/config/vivaldi/NativeMessagingHosts"
+  ]
+
+  var firefoxDirs = [
+    h + "/.mozilla/native-messaging-hosts",
+    h + "/.librewolf/native-messaging-hosts",
+    h + "/.waterfox/native-messaging-hosts",
+    h + "/.floorp/native-messaging-hosts",
+    h + "/.zen/native-messaging-hosts",
+    // Flatpaks
+    h + "/.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts",
+    h + "/.var/app/io.gitlab.librewolf-community/.librewolf/native-messaging-hosts",
+    h + "/.var/app/one.ablaze.floorp/.floorp/native-messaging-hosts",
+    h + "/.var/app/io.github.zen_browser.zen/.zen/native-messaging-hosts"
+  ]
+
+  return {
+    chromium: chromiumDirs,
+    firefox: firefoxDirs
+  }
+}
+
+function browserProxyPath(pluginDir) {
+  var dir = String(pluginDir || "").replace(/\/+$/, "")
+  return (dir ? dir + "/" : "") + "bin/desktop_proxy"
+}
+
+function browserChromiumManifestContent(proxyPath) {
+  return JSON.stringify({
+    name: "com.8bit.bitwarden",
+    description: "Bitwarden desktop <-> browser bridge",
+    path: proxyPath,
+    type: "stdio",
+    allowed_origins: BROWSER_CHROMIUM_ORIGINS
+  }, null, 2)
+}
+
+function browserFirefoxManifestContent(proxyPath) {
+  return JSON.stringify({
+    name: "com.8bit.bitwarden",
+    description: "Bitwarden desktop <-> browser bridge",
+    path: proxyPath,
+    type: "stdio",
+    allowed_extensions: BROWSER_FIREFOX_EXTENSIONS
+  }, null, 2)
+}
+
+function browserSocketDir(home, xdgCacheHome) {
+  var c = String(xdgCacheHome || "").replace(/\/+$/, "")
+  if (!c) {
+    var h = String(home || "").replace(/\/+$/, "")
+    if (!h) h = "${HOME}"
+    c = h + "/.cache"
+  }
+  return c + "/com.bitwarden.desktop"
+}
+
+function browserSocketPath(home, xdgCacheHome) {
+  return browserSocketDir(home, xdgCacheHome) + "/s.bw"
+}
+
+function browserBridgeCommand(pluginDir) {
+  var dir = String(pluginDir || "").replace(/\/+$/, "")
+  var script = (dir ? dir + "/" : "") + "browser-bridge.js"
+  return ["node", script, "--server"]
+}
+
+function browserManifestInstallCommand(pluginDir, home, xdgConfigHome, xdgCacheHome) {
+  var proxy = browserProxyPath(pluginDir)
+  var chromeContent = browserChromiumManifestContent(proxy)
+  var ffContent = browserFirefoxManifestContent(proxy)
+  var dirs = browserManifestDirs(home, xdgConfigHome)
+  var sockDir = browserSocketDir(home, xdgCacheHome)
+
+  var script = "set -e; "
+  script += "chmod +x " + shellQuote(proxy) + " 2>/dev/null || true; "
+  script += "mkdir -p " + shellQuote(sockDir) + "; "
+  script += "chmod 700 " + shellQuote(sockDir) + "; "
+
+  for (var i = 0; i < dirs.chromium.length; i++) {
+    var dir = dirs.chromium[i]
+    script += "(parent=$(dirname " + shellQuote(dir) + "); if [ -d \"$parent\" ]; then "
+      + "mkdir -p " + shellQuote(dir) + " && "
+      + "printf '%s\\n' " + shellQuote(chromeContent) + " > " + shellQuote(dir + "/" + BROWSER_MANIFEST_NAME) + "; fi); "
+  }
+
+  for (var j = 0; j < dirs.firefox.length; j++) {
+    var fdir = dirs.firefox[j]
+    script += "(parent=$(dirname " + shellQuote(fdir) + "); if [ -d \"$parent\" ]; then "
+      + "mkdir -p " + shellQuote(fdir) + " && "
+      + "printf '%s\\n' " + shellQuote(ffContent) + " > " + shellQuote(fdir + "/" + BROWSER_MANIFEST_NAME) + "; fi); "
+  }
+
+  return ["bash", "-c", script]
+}
+
+function browserManifestRemoveCommand(home, xdgConfigHome, xdgCacheHome) {
+  var dirs = browserManifestDirs(home, xdgConfigHome)
+  var sockPath = browserSocketPath(home, xdgCacheHome)
+
+  var script = "rm -f " + shellQuote(sockPath) + " 2>/dev/null || true; "
+  var allDirs = dirs.chromium.concat(dirs.firefox)
+  for (var i = 0; i < allDirs.length; i++) {
+    script += "rm -f " + shellQuote(allDirs[i] + "/" + BROWSER_MANIFEST_NAME) + " 2>/dev/null || true; "
+  }
+  return ["bash", "-c", script]
+}
+

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Bitwarden Native Messaging Host Proxy
+# Forwards stdio from web browsers (Chrome, Firefox, Brave, Edge, etc.)
+# to ~/.cache/com.bitwarden.desktop/s.bw via the browser bridge.
+
+set -e
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+NODE_BIN=""
+if command -v node >/dev/null 2>&1; then
+  NODE_BIN="node"
+elif [ -x "$HOME/.local/share/mise/shims/node" ]; then
+  NODE_BIN="$HOME/.local/share/mise/shims/node"
+elif [ -x "/usr/bin/node" ]; then
+  NODE_BIN="/usr/bin/node"
+elif [ -x "/usr/local/bin/node" ]; then
+  NODE_BIN="/usr/local/bin/node"
+else
+  NODE_BIN="node"
+fi
+
+exec "$NODE_BIN" "$DIR/browser-bridge.js" --proxy "$@"
